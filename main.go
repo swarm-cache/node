@@ -5,8 +5,6 @@ import (
 )
 
 func main() {
-
-	setup.ParseCfg()
 	setup.ParseFlags()
 	setup.Exec()
 }

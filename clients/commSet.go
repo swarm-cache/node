@@ -11,6 +11,20 @@ import (
 	wconn "github.com/tgbv/swarm-cache/wrapped-conn"
 )
 
+// Attempts to set key in current bag and reply success message if ok
+func attemptSet(cw *wconn.WrappedConn, meta j, key string, data *[]byte) {
+	err := bag.Set(key, data)
+	if err == nil {
+		cw.ReplyMsg(meta["msgID"].(string), glob.RES_SUCCESS, nil, nil)
+	} else {
+		cw.Send(j{
+			"code":    glob.RES_ERROR,
+			"msgID":   meta["msgID"].(string),
+			"message": err.Error(),
+		}, nil)
+	}
+}
+
 // Sets data by key
 //
 // 1) check if key exists in current bag
@@ -28,8 +42,7 @@ func commSet(cw *wconn.WrappedConn, meta j, data *[]byte) {
 	// Check if data exists in current node bag.
 	// Set it if so.
 	if _, i := bag.Get(key); i {
-		bag.Set(key, data)
-		cw.ReplyMsg(meta["msgID"].(string), glob.RES_SUCCESS, nil, nil)
+		attemptSet(cw, meta, key, data)
 		return
 	}
 
@@ -75,9 +88,7 @@ func commSet(cw *wconn.WrappedConn, meta j, data *[]byte) {
 							//
 							// In which case it means we must set the key in our node bag.
 							if fMeta["code"].(float64) == glob.RES_NOT_FOUND && !replied {
-								bag.Set(key, data)
-
-								cw.ReplyMsg(meta["msgID"].(string), glob.RES_SUCCESS, nil, nil)
+								attemptSet(cw, meta, key, data)
 							}
 
 							fWc.DelCB(nFName)
@@ -91,8 +102,7 @@ func commSet(cw *wconn.WrappedConn, meta j, data *[]byte) {
 						time.Sleep(glob.NODE_TO_NODE_RES_TIMEOUT * time.Millisecond)
 
 						if !replied {
-							bag.Set(key, data)
-							cw.ReplyMsg(meta["msgID"].(string), glob.RES_SUCCESS, nil, nil)
+							attemptSet(cw, meta, key, data)
 						}
 					}()
 
@@ -133,8 +143,7 @@ func commSet(cw *wconn.WrappedConn, meta j, data *[]byte) {
 		wg.Wait()
 
 		if !found {
-			bag.Set(key, data)
-			cw.ReplyMsg(meta["msgID"].(string), glob.RES_SUCCESS, nil, nil)
+			attemptSet(cw, meta, key, data)
 		}
 	}()
 

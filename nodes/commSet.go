@@ -10,19 +10,29 @@ import (
 	wconn "github.com/tgbv/swarm-cache/wrapped-conn"
 )
 
+// Attempts to set key in current bag and reply success message if ok
+func attemptSet(cw *wconn.WrappedConn, meta j, key string, data *[]byte) {
+	err := bag.Set(key, data)
+	if err == nil {
+		cw.ReplyMsg(meta["msgID"].(string), glob.RES_SUCCESS, nil, nil)
+	} else {
+		cw.Send(j{
+			"type":    "res",
+			"msgID":   meta["msgID"].(string),
+			"commID":  meta["commID"],
+			"code":    glob.RES_ERROR,
+			"message": err.Error(),
+		}, nil)
+	}
+}
+
 // Sets a key only if present in current node.
 //
 // Otherwise attempts to find the key within other connected nodes. Returns 404 if not found
 func commSet(cw *wconn.WrappedConn, meta j, data *[]byte) {
 	// Check if key is set in current bag
 	if _, exists := bag.Get(meta["key"].(string)); exists {
-		bag.Set(meta["key"].(string), data)
-		cw.Send(j{
-			"msgID":  meta["msgID"],
-			"commID": meta["commID"],
-			"type":   "res",
-			"code":   glob.RES_SUCCESS,
-		}, nil)
+		attemptSet(cw, meta, meta["key"].(string), data)
 		return
 	}
 

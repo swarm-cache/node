@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"strings"
 	"sync"
 
 	"github.com/prometheus/common/log"
@@ -33,8 +34,12 @@ func Exec() {
 
 	// connect to nodes if specified
 	for _, addr := range glob.F_NODE_CONNECT {
-		wg.Add(1)
+		if addr == "" {
+			continue
+		}
+		addr = strings.ReplaceAll(addr, " ", "")
 
+		wg.Add(1)
 		go func(_addr string) {
 			nodes.Connect(_addr)
 			wg.Done()

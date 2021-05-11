@@ -16,6 +16,10 @@ var F_NODE_CONNECT = make([]string, 0)
 var F_LOG_IO_MSG = false
 var F_CONN_RC_CLEANUP_INTERVAL time.Duration = 2500 // milliseconds
 
-// Memory = keys length + data bytes length in Megabytes
+// Memory = keys length + data bytes length in Bytes
+// 0 = infinite
+//
+
 var F_MAX_USED_MEMORY int64 = 0
 var F_MAX_CACHED_KEYS int64 = 0
+var F_OVERFLOW_EXPAND bool = true

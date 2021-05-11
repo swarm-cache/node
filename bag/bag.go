@@ -34,16 +34,28 @@ func Set(key string, data *[]byte) error {
 	kLen := int64(len(key))
 	dLen := int64(len(*data))
 
-	if bagSize == glob.F_MAX_CACHED_KEYS && glob.F_MAX_CACHED_KEYS != 0 {
-		return fmt.Errorf("F_MAX_CACHED_KEYS exceeded!")
-	}
-	if dLen+kLen+usedMem > glob.F_MAX_USED_MEMORY/(1024*1024) && glob.F_MAX_USED_MEMORY != 0 {
-		return fmt.Errorf("F_MAX_USED_MEMORY exceeded!")
+	// If key is already set i don't check for F_MAX_CACHED_KEYS.
+	// Work only with F_MAX_USED_MEMORY
+	//
+	if oData, is := bag[key]; is {
+		if dLen+(usedMem-int64(len(oData))) > glob.F_MAX_USED_MEMORY && glob.F_MAX_USED_MEMORY != 0 {
+			return fmt.Errorf("F_MAX_USED_MEMORY exceeded!")
+		}
+
+		usedMem = (usedMem - int64(len(oData))) + dLen
+	} else {
+		if bagSize == glob.F_MAX_CACHED_KEYS && glob.F_MAX_CACHED_KEYS != 0 {
+			return fmt.Errorf("F_MAX_CACHED_KEYS exceeded!")
+		}
+		if dLen+kLen+usedMem > glob.F_MAX_USED_MEMORY && glob.F_MAX_USED_MEMORY != 0 {
+			return fmt.Errorf("F_MAX_USED_MEMORY exceeded!")
+		}
+
+		bagSize++
+		usedMem += kLen + dLen
 	}
 
 	bag[key] = *data
-	bagSize++
-	usedMem += kLen + dLen
 
 	return nil
 }

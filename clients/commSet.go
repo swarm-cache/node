@@ -1,6 +1,7 @@
 package clients
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -11,17 +12,96 @@ import (
 	wconn "github.com/tgbv/swarm-cache/wrapped-conn"
 )
 
+// Broadcasts set-strict command to connected nodes.
+// Is ran in case current bag has no more memory
+func broadcastSetStrict(cw *wconn.WrappedConn, meta j, data *[]byte) error {
+	commID, _ := lib.GenerateRandomString(glob.COMM_ID_LENGTH)
+	succeeded := false
+	errorMsg := ""
+
+	for _, n := range nodes.GetNodes() {
+		fMsgID, _ := lib.GenerateRandomString(glob.COMM_ID_LENGTH)
+		fContinue := make(chan bool)
+
+		n.PushCB(fMsgID, func(cbFName string, cbWC *wconn.WrappedConn, cbMeta j, cbData *[]byte) {
+			if cbFName == cbMeta["msgID"].(string) {
+				if cbMeta["code"].(float64) == glob.RES_SUCCESS {
+					succeeded = true
+					fContinue <- false
+				} else {
+					errorMsg = cbMeta["message"].(string)
+					fContinue <- true
+				}
+
+				n.DelCB(cbFName)
+			}
+		})
+
+		// send command
+		n.Send(j{
+			"msgID":  fMsgID,
+			"type":   "comm",
+			"commID": commID,
+			"comm":   "set-strict",
+			"key":    meta["key"].(string),
+		}, data)
+
+		// timeout handler
+		go func() {
+			time.Sleep(glob.NODE_TO_NODE_RES_TIMEOUT * time.Millisecond)
+
+			n.DelCB(fMsgID)
+			errorMsg = "Internode timeout occurred!"
+			fContinue <- true
+		}()
+
+		if <-fContinue {
+			continue
+		} else {
+			break
+		}
+	}
+
+	if succeeded {
+		return nil
+	} else {
+		return fmt.Errorf(errorMsg)
+	}
+}
+
 // Attempts to set key in current bag and reply success message if ok
-func attemptSet(cw *wconn.WrappedConn, meta j, key string, data *[]byte) {
-	err := bag.Set(key, data)
+func attemptSet(cw *wconn.WrappedConn, meta j, data *[]byte, broadcast bool) {
+	err := bag.Set(meta["key"].(string), data)
+	fmt.Println(err)
 	if err == nil {
 		cw.ReplyMsg(meta["msgID"].(string), glob.RES_SUCCESS, nil, nil)
 	} else {
-		cw.Send(j{
-			"code":    glob.RES_ERROR,
-			"msgID":   meta["msgID"].(string),
-			"message": err.Error(),
-		}, nil)
+		// broadcast only if allowed to
+		if !broadcast || !glob.F_OVERFLOW_EXPAND {
+			cw.Send(j{
+				"code":    glob.RES_ERROR,
+				"msgID":   meta["msgID"].(string),
+				"message": err.Error(),
+			}, nil)
+			return
+		}
+
+		err = broadcastSetStrict(cw, meta, data)
+		if err == nil {
+			bag.Del(meta["key"].(string))
+
+			cw.Send(j{
+				"code":  glob.RES_SUCCESS,
+				"msgID": meta["msgID"].(string),
+			}, nil)
+		} else {
+			cw.Send(j{
+				"code":    glob.RES_ERROR,
+				"msgID":   meta["msgID"].(string),
+				"message": err.Error(),
+			}, nil)
+		}
+
 	}
 }
 
@@ -42,7 +122,7 @@ func commSet(cw *wconn.WrappedConn, meta j, data *[]byte) {
 	// Check if data exists in current node bag.
 	// Set it if so.
 	if _, i := bag.Get(key); i {
-		attemptSet(cw, meta, key, data)
+		attemptSet(cw, meta, data, true)
 		return
 	}
 
@@ -79,7 +159,7 @@ func commSet(cw *wconn.WrappedConn, meta j, data *[]byte) {
 					// Push waiter callback
 					fWc.PushCB(cbMsgID, func(nFName string, nFWc *wconn.WrappedConn, nFMeta j, nFData *[]byte) {
 						if nFName == nFMeta["msgID"].(string) {
-							if fMeta["code"].(float64) == glob.RES_SUCCESS {
+							if nFMeta["code"].(float64) == glob.RES_SUCCESS {
 								cw.ReplyMsg(meta["msgID"].(string), glob.RES_SUCCESS, nil, nil)
 							}
 
@@ -87,24 +167,18 @@ func commSet(cw *wconn.WrappedConn, meta j, data *[]byte) {
 							// deletes the key from that node after we send the get command AND BEFORE we send the set command.
 							//
 							// In which case it means we must set the key in our node bag.
-							if fMeta["code"].(float64) == glob.RES_NOT_FOUND && !replied {
-								attemptSet(cw, meta, key, data)
+							if nFMeta["code"].(float64) == glob.RES_NOT_FOUND && !replied {
+								attemptSet(cw, meta, data, true)
+							}
+
+							if nFMeta["code"].(float64) == glob.RES_ERROR && !replied {
+								attemptSet(cw, meta, data, false)
 							}
 
 							fWc.DelCB(nFName)
 							replied = true
 						}
 					})
-
-					// timeout handler
-					// set the key in our node if no reply in mean time
-					go func() {
-						time.Sleep(glob.NODE_TO_NODE_RES_TIMEOUT * time.Millisecond)
-
-						if !replied {
-							attemptSet(cw, meta, key, data)
-						}
-					}()
 
 					// Send command to set it!
 					fWc.Send(j{
@@ -114,6 +188,16 @@ func commSet(cw *wconn.WrappedConn, meta j, data *[]byte) {
 						"comm":   "set",
 						"key":    key,
 					}, data)
+
+					// timeout handler
+					// set the key in our node if no reply in mean time
+					go func() {
+						time.Sleep(glob.NODE_TO_NODE_RES_TIMEOUT * time.Millisecond)
+
+						if !replied {
+							attemptSet(cw, meta, data, true)
+						}
+					}()
 				}
 				localMux.Unlock()
 
@@ -143,7 +227,7 @@ func commSet(cw *wconn.WrappedConn, meta j, data *[]byte) {
 		wg.Wait()
 
 		if !found {
-			attemptSet(cw, meta, key, data)
+			attemptSet(cw, meta, data, true)
 		}
 	}()
 

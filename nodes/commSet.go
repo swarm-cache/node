@@ -1,6 +1,7 @@
 package nodes
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -10,19 +11,100 @@ import (
 	wconn "github.com/tgbv/swarm-cache/wrapped-conn"
 )
 
-// Attempts to set key in current bag and reply success message if ok
-func attemptSet(cw *wconn.WrappedConn, meta j, key string, data *[]byte) {
-	err := bag.Set(key, data)
-	if err == nil {
-		cw.ReplyMsg(meta["msgID"].(string), glob.RES_SUCCESS, nil, nil)
+// Broadcasts set-strict command to connected nodes.
+// Is ran in case current bag has no more memory
+func broadcastSetStrict(cw *wconn.WrappedConn, meta j, data *[]byte) error {
+	succeeded := false
+	errorMsg := "Swarm ran out of memory!"
+	commID, _ := lib.GenerateRandomString(glob.COMM_ID_LENGTH)
+
+	for _, n := range nodes {
+		fMsgID, _ := lib.GenerateRandomString(glob.COMM_ID_LENGTH)
+		fContinue := make(chan bool)
+
+		n.PushCB(fMsgID, func(cbFName string, cbWC *wconn.WrappedConn, cbMeta j, cbData *[]byte) {
+			if cbFName == cbMeta["msgID"].(string) {
+				if cbMeta["code"].(float64) == glob.RES_SUCCESS {
+					succeeded = true
+					fContinue <- false
+				} else {
+					errorMsg = cbMeta["message"].(string)
+					fContinue <- true
+				}
+
+				n.DelCB(cbFName)
+			}
+		})
+
+		// send command
+		n.Send(j{
+			"msgID":  fMsgID,
+			"type":   "comm",
+			"commID": commID,
+			"comm":   "set-strict",
+			"key":    meta["key"].(string),
+		}, data)
+
+		// timeout handler
+		go func() {
+			time.Sleep(glob.NODE_TO_NODE_RES_TIMEOUT * time.Millisecond)
+
+			n.DelCB(fMsgID)
+			errorMsg = "Internode timeout occurred!"
+			fContinue <- true
+		}()
+
+		if <-fContinue {
+			continue
+		} else {
+			break
+		}
+	}
+
+	if succeeded {
+		return nil
 	} else {
+		return fmt.Errorf(errorMsg)
+	}
+}
+
+// Attempts to set key in current bag and reply success message if ok
+func attemptSet(cw *wconn.WrappedConn, meta j, data *[]byte) {
+	err := bag.Set(meta["key"].(string), data)
+	if err == nil {
 		cw.Send(j{
-			"type":    "res",
-			"msgID":   meta["msgID"].(string),
-			"commID":  meta["commID"],
-			"code":    glob.RES_ERROR,
-			"message": err.Error(),
+			"type":  "res",
+			"msgID": meta["msgID"].(string),
+			"code":  glob.RES_SUCCESS,
 		}, nil)
+	} else {
+		// expand only if allowed to.
+		if !glob.F_OVERFLOW_EXPAND {
+			cw.Send(j{
+				"type":    "res",
+				"msgID":   meta["msgID"].(string),
+				"commID":  meta["commID"],
+				"code":    glob.RES_ERROR,
+				"message": err.Error(),
+			}, nil)
+		}
+
+		if e := broadcastSetStrict(cw, meta, data); e == nil {
+			cw.Send(j{
+				"type":   "res",
+				"msgID":  meta["msgID"].(string),
+				"commID": meta["commID"],
+				"code":   glob.RES_SUCCESS,
+			}, nil)
+		} else {
+			cw.Send(j{
+				"type":    "res",
+				"msgID":   meta["msgID"].(string),
+				"commID":  meta["commID"],
+				"code":    glob.RES_ERROR,
+				"message": e.Error(),
+			}, nil)
+		}
 	}
 }
 
@@ -32,7 +114,7 @@ func attemptSet(cw *wconn.WrappedConn, meta j, key string, data *[]byte) {
 func commSet(cw *wconn.WrappedConn, meta j, data *[]byte) {
 	// Check if key is set in current bag
 	if _, exists := bag.Get(meta["key"].(string)); exists {
-		attemptSet(cw, meta, meta["key"].(string), data)
+		attemptSet(cw, meta, data)
 		return
 	}
 

@@ -177,8 +177,8 @@ func defaultWSMessageHandler(_ string, cw *c.WrappedConn, meta j, input *[]byte)
 		commSet(cw, meta, input)
 	case "del":
 		commDel(cw, meta)
-	case "delcb":
-		//cw.DelCB(key)
+	case "set-strict":
+		commSetStrict(cw, meta, input)
 
 	default:
 		cw.Send(j{
